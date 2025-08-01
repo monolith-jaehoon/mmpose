@@ -3,6 +3,7 @@ import logging
 import mimetypes
 import os
 import time
+import subprocess
 from argparse import ArgumentParser
 
 import cv2
@@ -95,6 +96,12 @@ def main():
         help='root of the output img file. '
         'Default not saving the visualization images.')
     parser.add_argument(
+        '--output-v4l2',
+        type=str,
+        default='',
+        help='output device number.'
+        'Default not saving the visualization images.')
+    parser.add_argument(
         '--save-predictions',
         action='store_true',
         default=False,
@@ -158,10 +165,12 @@ def main():
 
     args = parser.parse_args()
 
-    assert args.show or (args.output_root != '')
+    assert args.show or (args.output_root != '') or (args.output_v4l2 != '')
     assert args.input != ''
     assert args.det_config is not None
     assert args.det_checkpoint is not None
+
+    output_v4l2_proc = None
 
     output_file = None
     if args.output_root:
@@ -263,6 +272,27 @@ def main():
 
                 video_writer.write(mmcv.rgb2bgr(frame_vis))
 
+            if args.output_v4l2 != '':
+                frame_vis = visualizer.get_image()
+                if output_v4l2_proc is None:
+                    height, width = frame_vis.shape[:2]
+                    fps = 25
+                    ffmpeg_cmd = [
+                        'ffmpeg',
+                        '-loglevel', 'error',          # 필요시 'info'로 변경
+                        '-f', 'rawvideo',
+                        '-pix_fmt', 'bgr24',
+                        '-s', f'{width}x{height}',
+                        '-r', str(fps),
+                        '-i', '-',                     # stdin에서 raw BGR 입력
+                        '-f', 'v4l2',
+                        '-pix_fmt', 'yuv420p',         # 장치 호환 포맷 (필수)
+                        '/dev/video' + args.output_v4l2
+                    ]
+                    output_v4l2_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+
+                output_v4l2_proc.stdin.write(mmcv.rgb2bgr(frame_vis).tobytes())
+
             if args.show:
                 # press ESC to exit
                 if cv2.waitKey(5) & 0xFF == 27:
@@ -272,6 +302,10 @@ def main():
 
         if video_writer:
             video_writer.release()
+
+        if output_v4l2_proc is not None:
+            output_v4l2_proc.stdin.close()
+            output_v4l2_proc.wait()
 
         cap.release()
 
