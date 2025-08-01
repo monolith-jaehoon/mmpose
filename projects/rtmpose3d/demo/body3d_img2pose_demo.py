@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import logging
+import subprocess
 import mimetypes
 import os
 import time
@@ -77,6 +78,12 @@ def parse_args():
         type=str,
         default='',
         help='Root of the output video file. '
+        'Default not saving the visualization video.')
+    parser.add_argument(
+        '--output-v4l2',
+        type=str,
+        default='',
+        help='output video device. '
         'Default not saving the visualization video.')
     parser.add_argument(
         '--save-predictions',
@@ -263,10 +270,12 @@ def main():
 
     args = parse_args()
 
-    assert args.show or (args.output_root != '')
+    assert args.show or (args.output_root != '') or (args.output_v4l2 != '')
     assert args.input != ''
     assert args.det_config is not None
     assert args.det_checkpoint is not None
+
+    output_v4l2_proc = None
 
     detector = init_detector(
         args.det_config, args.det_checkpoint, device=args.device.lower())
@@ -400,6 +409,26 @@ def main():
                                                     frame_vis.shape[0]))
                 video_writer.write(mmcv.rgb2bgr(frame_vis))
 
+            if args.output_v4l2 != '':
+                frame_vis = visualizer.get_image()
+                if output_v4l2_proc is None:
+                    height, width = frame_vis.shape[:2]
+                    ffmpeg_cmd = [
+                        'ffmpeg',
+                        '-loglevel', 'error',
+                        '-f', 'rawvideo',
+                        '-pix_fmt', 'bgr24',
+                        '-s', f'{width}x{height}',
+                        '-r', str(fps),
+                        '-i', '-',
+                        '-f', 'v4l2',
+                        '-pix_fmt', 'yuv420p',
+                        '/dev/video' + args.output_v4l2
+                    ]
+                    output_v4l2_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+
+                output_v4l2_proc.stdin.write(frame_vis.tobytes())
+
             if args.show:
                 # press ESC to exit
                 if cv2.waitKey(5) & 0xFF == 27:
@@ -407,6 +436,10 @@ def main():
                 time.sleep(args.show_interval)
 
         video.release()
+
+        if  output_v4l2_procis not None:
+            output_v4l2_proc.stdin.close()
+            output_v4l2_proc.wait()
 
         if video_writer:
             video_writer.release()
